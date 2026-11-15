@@ -1,0 +1,172 @@
+
+name: Universal Device Agent - Build All Platforms
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract uploaded project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Universal_Device_Agent_GitHub_Ready-1.zip || { echo "Project ZIP not found"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/uda-source"
+          unzip -q Universal_Device_Agent_GitHub_Ready-1.zip -d "$RUNNER_TEMP/uda-source"
+          cp -a "$RUNNER_TEMP/uda-source/." "$GITHUB_WORKSPACE/"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Verify project
+        run: |
+          test -f shared_app/pubspec.yaml
+          test -f shared_app/lib/main.dart
+
+      - name: Generate Android platform files
+        working-directory: shared_app
+        run: |
+          flutter create --platforms=android --org com.deviceagent --project-name shared_app .
+          rm -f android/settings.gradle.kts android/build.gradle.kts android/app/build.gradle.kts
+          rm -rf android/app/src/main/kotlin/com/example
+
+      - name: Build APK
+        working-directory: shared_app
+        env:
+          CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
+        run: |
+          flutter pub get
+          flutter build apk --release --dart-define=CONTROL_API_URL="$CONTROL_API_URL"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Universal-Device-Agent-APK
+          path: shared_app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  windows:
+    name: Windows EXE Build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract uploaded project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Universal_Device_Agent_GitHub_Ready-1.zip || { echo "Project ZIP not found"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/uda-source"
+          unzip -q Universal_Device_Agent_GitHub_Ready-1.zip -d "$RUNNER_TEMP/uda-source"
+          cp -a "$RUNNER_TEMP/uda-source/." "$GITHUB_WORKSPACE/"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Verify project
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'shared_app/pubspec.yaml')) { throw 'Project missing' }
+          if (!(Test-Path 'shared_app/windows/CMakeLists.txt')) { throw 'Windows CMakeLists missing' }
+
+      - name: Generate missing managed Windows CMake files safely
+        shell: pwsh
+        run: |
+          $template = Join-Path $env:RUNNER_TEMP 'uda_windows_template'
+          if (Test-Path $template) { Remove-Item $template -Recurse -Force }
+          flutter create --platforms=windows --org com.deviceagent --project-name shared_app $template
+          $sourceFlutter = Join-Path $template 'windows/flutter'
+          $targetFlutter = 'shared_app/windows/flutter'
+          if (!(Test-Path (Join-Path $sourceFlutter 'CMakeLists.txt'))) {
+            throw 'Flutter template missing'
+          }
+          if (Test-Path $targetFlutter) { Remove-Item $targetFlutter -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path 'shared_app/windows' | Out-Null
+          Copy-Item $sourceFlutter $targetFlutter -Recurse -Force
+
+      - name: Build Windows release
+        working-directory: shared_app
+        env:
+          CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
+        run: |
+          flutter pub get
+          if (!(Test-Path 'windows/flutter/CMakeLists.txt')) { throw 'Windows Flutter files missing' }
+          flutter build windows --release --dart-define=CONTROL_API_URL="$env:CONTROL_API_URL"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Universal-Device-Agent-Windows
+          path: shared_app/build/windows/x64/runner/Release/
+          if-no-files-found: error
+
+  linux:
+    name: Linux / ChromeOS Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract uploaded project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Universal_Device_Agent_GitHub_Ready-1.zip || { echo "Project ZIP not found"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/uda-source"
+          unzip -q Universal_Device_Agent_GitHub_Ready-1.zip -d "$RUNNER_TEMP/uda-source"
+          cp -a "$RUNNER_TEMP/uda-source/." "$GITHUB_WORKSPACE/"
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libglib2.0-dev libpipewire-0.3-dev libx11-dev libxtst-dev libturbojpeg0-dev libebook1.2-dev dpkg
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate missing managed Linux CMake files safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f shared_app/pubspec.yaml
+          template="$RUNNER_TEMP/uda_linux_template"
+          rm -rf "$template"
+          flutter create --platforms=linux --org com.deviceagent --project-name shared_app "$template"
+          test -f "$template/linux/flutter/CMakeLists.txt"
+          rm -rf shared_app/linux/flutter
+          cp -a "$template/linux/flutter" shared_app/linux/flutter
+
+      - name: Build Linux release
+        working-directory: shared_app
+        env:
+          CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
+        run: |
+          flutter pub get
+          test -f linux/flutter/CMakeLists.txt
+          flutter build linux --release --dart-define=CONTROL_API_URL="$CONTROL_API_URL"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Universal-Device-Agent-Linux
+          path: shared_app/build/linux/x64/release/bundle/
+          if-no-files-found: error
