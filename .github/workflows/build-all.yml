@@ -11,155 +11,264 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: uda-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ZIP: Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip
+  FLUTTER_VERSION: 3.47.7
+
 jobs:
+
+  # ---------------- ANDROID APK ----------------
+
   android:
     name: Android APK
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Extract corrected project ZIP
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract project
         shell: bash
         run: |
-          test -f Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip
-          unzip -o Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip -d .
+          set -euo pipefail
+          test -f "$PROJECT_ZIP" || {
+            echo "Project ZIP not found: $PROJECT_ZIP"
+            exit 1
+          }
+          unzip -o "$PROJECT_ZIP" -d .
+          test -f shared_app/pubspec.yaml
+          test -f shared_app/lib/main.dart
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: subosito/flutter-action@v2
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.7'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+          cache-key: android-${{ runner.os }}-${{ hashFiles('shared_app/pubspec.lock') }}
 
-      - name: Verify project
+      - name: Generate Android platform only if missing
         shell: bash
         run: |
-          test -f shared_app/pubspec.yaml
-          test -f shared_app/lib/main.dart
+          set -euo pipefail
 
-      - name: Generate Android platform files
+          if [ ! -f shared_app/android/gradlew ]; then
+            template="$RUNNER_TEMP/uda_android_template"
+            rm -rf "$template"
+
+            flutter create \
+              --platforms=android \
+              --org com.deviceagent \
+              --project-name shared_app \
+              "$template"
+
+            rm -rf shared_app/android
+            cp -a "$template/android" shared_app/android
+          fi
+
+      - name: Install dependencies
         working-directory: shared_app
-        run: |
-          flutter create --platforms=android --org com.deviceagent --project-name shared_app .
-          rm -f android/settings.gradle.kts android/build.gradle.kts android/app/build.gradle.kts
-          rm -rf android/app/src/main/kotlin/com/example
+        run: flutter pub get
 
       - name: Build APK
         working-directory: shared_app
         env:
           CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
         run: |
-          flutter pub get
-          flutter build apk --release --dart-define=CONTROL_API_URL="$CONTROL_API_URL"
+          flutter build apk --release \
+            --dart-define=CONTROL_API_URL="$CONTROL_API_URL"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: Universal-Device-Agent-APK
           path: shared_app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+          retention-days: 14
+
+
+  # ---------------- WINDOWS EXE ----------------
 
   windows:
-    name: Windows EXE Build
+    name: Windows EXE
     runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Extract corrected project ZIP
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract project
         shell: pwsh
         run: |
-          $zip = 'Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip'
-          if (!(Test-Path $zip)) { throw "Corrected project ZIP not found: $zip" }
-          Expand-Archive -LiteralPath $zip -DestinationPath . -Force
+          if (!(Test-Path $env:PROJECT_ZIP)) {
+            throw "Project ZIP not found: $env:PROJECT_ZIP"
+          }
 
-      - uses: subosito/flutter-action@v2
+          Expand-Archive `
+            -LiteralPath $env:PROJECT_ZIP `
+            -DestinationPath . `
+            -Force
+
+          if (!(Test-Path 'shared_app/pubspec.yaml')) {
+            throw 'shared_app/pubspec.yaml not found.'
+          }
+
+          if (!(Test-Path 'shared_app/lib/main.dart')) {
+            throw 'shared_app/lib/main.dart not found.'
+          }
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.7'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
-      - name: Verify project
-        shell: pwsh
-        run: |
-          if (!(Test-Path 'shared_app/pubspec.yaml')) { throw 'shared_app/pubspec.yaml not found at repository root.' }
-          if (!(Test-Path 'shared_app/windows/CMakeLists.txt')) { throw 'Custom Windows CMakeLists.txt is missing.' }
-
-      - name: Generate missing managed Windows CMake files safely
+      - name: Generate missing Windows platform files
         shell: pwsh
         run: |
           $template = Join-Path $env:RUNNER_TEMP 'uda_windows_template'
-          if (Test-Path $template) { Remove-Item $template -Recurse -Force }
-          flutter create --platforms=windows --org com.deviceagent --project-name shared_app $template
-          $sourceFlutter = Join-Path $template 'windows/flutter'
-          $targetFlutter = 'shared_app/windows/flutter'
-          if (!(Test-Path (Join-Path $sourceFlutter 'CMakeLists.txt'))) {
-            throw 'Flutter template did not generate windows/flutter/CMakeLists.txt.'
-          }
-          if (Test-Path $targetFlutter) { Remove-Item $targetFlutter -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path 'shared_app/windows' | Out-Null
-          Copy-Item $sourceFlutter $targetFlutter -Recurse -Force
 
-      - name: Build Windows release
+          if (!(Test-Path 'shared_app/windows/flutter/CMakeLists.txt')) {
+            Remove-Item $template -Recurse -Force -ErrorAction SilentlyContinue
+
+            flutter create `
+              --platforms=windows `
+              --org com.deviceagent `
+              --project-name shared_app `
+              $template
+
+            if (!(Test-Path "$template/windows/flutter/CMakeLists.txt")) {
+              throw 'Windows Flutter template generation failed.'
+            }
+
+            New-Item -ItemType Directory `
+              -Force `
+              -Path 'shared_app/windows' | Out-Null
+
+            Copy-Item `
+              "$template/windows/flutter" `
+              'shared_app/windows/flutter' `
+              -Recurse `
+              -Force
+          }
+
+          if (!(Test-Path 'shared_app/windows/CMakeLists.txt')) {
+            throw 'Custom Windows CMakeLists.txt is missing.'
+          }
+
+      - name: Install dependencies
+        working-directory: shared_app
+        run: flutter pub get
+
+      - name: Build Windows EXE
         working-directory: shared_app
         env:
           CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
         run: |
-          flutter pub get
-          if (!(Test-Path 'windows/flutter/CMakeLists.txt')) { throw 'windows/flutter/CMakeLists.txt still missing.' }
-          flutter build windows --release --dart-define=CONTROL_API_URL="$env:CONTROL_API_URL"
+          flutter build windows --release `
+            --dart-define=CONTROL_API_URL="$env:CONTROL_API_URL"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
         with:
           name: Universal-Device-Agent-Windows
           path: shared_app/build/windows/x64/runner/Release/
           if-no-files-found: error
+          retention-days: 14
+
+
+  # ---------------- LINUX / CHROMEOS ----------------
 
   linux:
-    name: Linux / ChromeOS Build
+    name: Linux / ChromeOS
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Extract corrected project ZIP
-        shell: bash
-        run: |
-          test -f Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip
-          unzip -o Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip -d .
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libglib2.0-dev libpipewire-0.3-dev libx11-dev libxtst-dev libturbojpeg0-dev libebook1.2-dev dpkg
-
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.47.7'
-          cache: true
-
-      - name: Generate missing managed Linux CMake files safely
+      - name: Extract project
         shell: bash
         run: |
           set -euo pipefail
+          test -f "$PROJECT_ZIP"
+          unzip -o "$PROJECT_ZIP" -d .
           test -f shared_app/pubspec.yaml
-          template="$RUNNER_TEMP/uda_linux_template"
-          rm -rf "$template"
-          flutter create --platforms=linux --org com.deviceagent --project-name shared_app "$template"
-          test -f "$template/linux/flutter/CMakeLists.txt"
-          rm -rf shared_app/linux/flutter
-          cp -a "$template/linux/flutter" shared_app/linux/flutter
+          test -f shared_app/lib/main.dart
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libpipewire-0.3-dev \
+            libx11-dev \
+            libxtst-dev \
+            libturbojpeg0-dev \
+            libebook1.2-dev \
+            dpkg
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Generate missing Linux platform files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f shared_app/linux/flutter/CMakeLists.txt ]; then
+            template="$RUNNER_TEMP/uda_linux_template"
+            rm -rf "$template"
+
+            flutter create \
+              --platforms=linux \
+              --org com.deviceagent \
+              --project-name shared_app \
+              "$template"
+
+            test -f "$template/linux/flutter/CMakeLists.txt"
+
+            mkdir -p shared_app/linux
+            rm -rf shared_app/linux/flutter
+            cp -a "$template/linux/flutter" shared_app/linux/flutter
+          fi
+
+          test -f shared_app/linux/CMakeLists.txt
+
+      - name: Install dependencies
+        working-directory: shared_app
+        run: flutter pub get
 
       - name: Build Linux release
         working-directory: shared_app
         env:
           CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
         run: |
-          flutter pub get
-          test -f linux/flutter/CMakeLists.txt
-          flutter build linux --release --dart-define=CONTROL_API_URL="$CONTROL_API_URL"
+          flutter build linux --release \
+            --dart-define=CONTROL_API_URL="$CONTROL_API_URL"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Linux build
+        uses: actions/upload-artifact@v4
         with:
           name: Universal-Device-Agent-Linux
           path: shared_app/build/linux/x64/release/bundle/
           if-no-files-found: error
+          retention-days: 14
