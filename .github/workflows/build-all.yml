@@ -18,14 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract uploaded project ZIP
+      - name: Extract corrected project ZIP
         shell: bash
         run: |
-          set -euo pipefail
-          test -f Universal_Device_Agent_GitHub_Ready-1.zip || { echo "Project ZIP not found"; exit 1; }
-          mkdir -p "$RUNNER_TEMP/uda-source"
-          unzip -q Universal_Device_Agent_GitHub_Ready-1.zip -d "$RUNNER_TEMP/uda-source"
-          cp -a "$RUNNER_TEMP/uda-source/." "$GITHUB_WORKSPACE/"
+          test -f Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip
+          unzip -o Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip -d .
 
       - uses: actions/setup-java@v4
         with:
@@ -34,10 +31,11 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.7'
           cache: true
 
       - name: Verify project
+        shell: bash
         run: |
           test -f shared_app/pubspec.yaml
           test -f shared_app/lib/main.dart
@@ -69,25 +67,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract uploaded project ZIP
-        shell: bash
+      - name: Extract corrected project ZIP
+        shell: pwsh
         run: |
-          set -euo pipefail
-          test -f Universal_Device_Agent_GitHub_Ready-1.zip || { echo "Project ZIP not found"; exit 1; }
-          mkdir -p "$RUNNER_TEMP/uda-source"
-          unzip -q Universal_Device_Agent_GitHub_Ready-1.zip -d "$RUNNER_TEMP/uda-source"
-          cp -a "$RUNNER_TEMP/uda-source/." "$GITHUB_WORKSPACE/"
+          $zip = 'Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip'
+          if (!(Test-Path $zip)) { throw "Corrected project ZIP not found: $zip" }
+          Expand-Archive -LiteralPath $zip -DestinationPath . -Force
 
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.7'
           cache: true
 
       - name: Verify project
         shell: pwsh
         run: |
-          if (!(Test-Path 'shared_app/pubspec.yaml')) { throw 'Project missing' }
-          if (!(Test-Path 'shared_app/windows/CMakeLists.txt')) { throw 'Windows CMakeLists missing' }
+          if (!(Test-Path 'shared_app/pubspec.yaml')) { throw 'shared_app/pubspec.yaml not found at repository root.' }
+          if (!(Test-Path 'shared_app/windows/CMakeLists.txt')) { throw 'Custom Windows CMakeLists.txt is missing.' }
 
       - name: Generate missing managed Windows CMake files safely
         shell: pwsh
@@ -98,7 +94,7 @@ jobs:
           $sourceFlutter = Join-Path $template 'windows/flutter'
           $targetFlutter = 'shared_app/windows/flutter'
           if (!(Test-Path (Join-Path $sourceFlutter 'CMakeLists.txt'))) {
-            throw 'Flutter template missing'
+            throw 'Flutter template did not generate windows/flutter/CMakeLists.txt.'
           }
           if (Test-Path $targetFlutter) { Remove-Item $targetFlutter -Recurse -Force }
           New-Item -ItemType Directory -Force -Path 'shared_app/windows' | Out-Null
@@ -110,7 +106,7 @@ jobs:
           CONTROL_API_URL: ${{ vars.CONTROL_API_URL || 'http://localhost:8080' }}
         run: |
           flutter pub get
-          if (!(Test-Path 'windows/flutter/CMakeLists.txt')) { throw 'Windows Flutter files missing' }
+          if (!(Test-Path 'windows/flutter/CMakeLists.txt')) { throw 'windows/flutter/CMakeLists.txt still missing.' }
           flutter build windows --release --dart-define=CONTROL_API_URL="$env:CONTROL_API_URL"
 
       - uses: actions/upload-artifact@v4
@@ -125,14 +121,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract uploaded project ZIP
+      - name: Extract corrected project ZIP
         shell: bash
         run: |
-          set -euo pipefail
-          test -f Universal_Device_Agent_GitHub_Ready-1.zip || { echo "Project ZIP not found"; exit 1; }
-          mkdir -p "$RUNNER_TEMP/uda-source"
-          unzip -q Universal_Device_Agent_GitHub_Ready-1.zip -d "$RUNNER_TEMP/uda-source"
-          cp -a "$RUNNER_TEMP/uda-source/." "$GITHUB_WORKSPACE/"
+          test -f Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip
+          unzip -o Universal_Device_Agent_GitHub_Ready-2-fixed-APK-EXE-Linux.zip -d .
 
       - name: Install Linux build dependencies
         run: |
@@ -141,7 +134,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.7'
           cache: true
 
       - name: Generate missing managed Linux CMake files safely
